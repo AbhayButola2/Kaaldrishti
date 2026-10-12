@@ -1,0 +1,74 @@
+[package]
+name = "kaalform"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Kaalform: Agent Execution Firewall — Pillar 4 (tool-manifest signing) and Pillar 5 (provenance firewall) for Kaaladrishti"
+
+[lib]
+name = "kaalform"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kaalform"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime — TCP gateway and provenance emitter both need async I/O.
+tokio = { version = "1", features = ["full"] }
+
+# Cryptography: Ed25519 signing and verification (Pillar 4).
+# ed25519-dalek is a pure-Rust, audited implementation.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+
+# SHA-256 for canonical manifest hashing before signing.
+sha2 = "0.10"
+
+# Hex encoding/decoding for signature and key representations.
+hex = "0.4"
+
+# Serialization for manifests, provenance records, and config.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Protobuf encoding — emits TelemetryEvent to Kaaladrishti.
+prost = "0.12"
+prost-types = "0.12"
+
+# Bytes buffer for length-prefixed framing (same as telemetry-kernel).
+bytes = "1"
+
+# Async-write extension trait.
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# HTTP server for the MCP proxy gateway endpoint.
+axum = { version = "0.7", features = ["json"] }
+
+# HTTP client for upstream MCP server proxying.
+reqwest = { version = "0.12", features = ["json"] }
+
+# UUIDs for receipt and request IDs.
+uuid = { version = "1", features = ["v4"] }
+
+# Random number generation (required by ed25519-dalek signing).
+rand = "0.8"
+
+# Structured logging — JSON output matching Kaaladrishti conventions.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling.
+anyhow = "1"
+thiserror = "1"
+
+# Environment variable config.
+dotenvy = "0.15"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3"
+
+[build-dependencies]
+# Protobuf code generation for the Kaaladrishti platform schema.
+prost-build = "0.12"

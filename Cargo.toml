@@ -1,0 +1,18 @@
+[workspace]
+members = [
+    "crates/telemetry-kernel",
+    "crates/kaalform",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Kaaladrishti Team <kaaladrishti@upes.ac.in>"]
+license = "MIT"
+repository = "https://github.com/kaaladrishti/kaaladrishti"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

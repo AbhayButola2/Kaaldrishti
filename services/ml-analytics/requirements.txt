@@ -1,0 +1,12 @@
+grpcio
+grpcio-tools
+protobuf
+fastapi
+uvicorn[standard]
+pydantic
+torch
+torch-geometric
+networkx
+scikit-learn
+numpy
+scipy

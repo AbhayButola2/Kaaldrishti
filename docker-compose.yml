@@ -1,0 +1,64 @@
+services:
+  ml-analytics:
+    build:
+      context: .
+      dockerfile: services/ml-analytics/Dockerfile
+    ports:
+      - "50051:50051"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s = socket.socket(); s.connect(('localhost', 50051))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - KAALADRISHTI_ML_GRPC_ADDR=ml-analytics:50051
+      - KAALADRISHTI_UDS_PATH=/tmp/kaaladrishti_ipc/kaaladrishti.sock
+      - KAALADRISHTI_GRAPH_DB_PATH=/data/kaaladrishti_graph.db
+      - KAALADRISHTI_AUDIT_LOG_PATH=/data/kaaladrishti_audit.jsonl
+    volumes:
+      - ipc_volume:/tmp/kaaladrishti_ipc
+      - data_volume:/data
+    depends_on:
+      - ml-analytics
+    restart: unless-stopped
+
+  telemetry:
+    build:
+      context: .
+      dockerfile: crates/telemetry-kernel/Dockerfile
+    environment:
+      - KAALADRISHTI_UDS_PATH=/tmp/kaaladrishti_ipc/kaaladrishti.sock
+    volumes:
+      - ipc_volume:/tmp/kaaladrishti_ipc
+    depends_on:
+      - engine
+    restart: unless-stopped
+
+  kaalform:
+    build:
+      context: .
+      dockerfile: crates/kaalform/Dockerfile
+    ports:
+      - "7070:7070"
+    environment:
+      - KAALFORM_LISTEN_ADDR=0.0.0.0:7070
+      - KAALFORM_UPSTREAM_MCP_URL=http://localhost:8000
+      - KAALFORM_KAALADRISHTI_ADDR=engine:9090
+      - KAALFORM_DRIFT_THRESHOLD=0.45
+      - KAALFORM_REQUIRE_MANIFEST=false
+    depends_on:
+      - engine
+    restart: unless-stopped
+
+volumes:
+  ipc_volume:
+  data_volume:
+

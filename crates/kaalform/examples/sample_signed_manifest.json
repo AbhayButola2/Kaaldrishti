@@ -1,0 +1,18 @@
+{
+  "body": {
+    "manifest_version": "1",
+    "tool_id": "kaaladrishti/graph-query@1.0.0",
+    "tool_name": "Graph Query",
+    "tool_version": "1.0.0",
+    "capabilities": [
+      "read"
+    ],
+    "allowed_principals": [
+      "*"
+    ],
+    "max_privilege_level": 2.0,
+    "expires_at": "2099-01-01T00:00:00Z",
+    "signing_key_fingerprint": "7b26ebc5712e391e1401a986cfa26148639e3c9bf06546d02ad84724978b949a"
+  },
+  "signature": "990723060d10b487864eda3be926932a328ad774c321637b9576db3ffd1c44844573e264a96a2b94f07a77bcd77c3184ac1715b3f8499fe72b9e16e9486e5d0e"
+}

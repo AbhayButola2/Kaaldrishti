@@ -1,0 +1,566 @@
+// proto/kaaladrishti/v1/platform.proto
+//
+// Canonical, versioned protobuf contract for the Kaaladrishti platform.
+// Shared verbatim by Rust (prost), Go (protoc-gen-go), and Python (grpc_tools).
+//
+// CONTRACT CHANGE POLICY:
+//   - New fields must be additive (never change field numbers or types).
+//   - Any shape change must be explicitly called out in the phase's delivery notes.
+//   - Enum values should only be added, never removed or renumbered.
+//
+// DEFERRED FIELDS (reserved for future phases, not read/written in Phase 1-11):
+//   - AgentRequest.tool_manifest_ref: reserved for Pillar 4 cryptographic tool-manifest
+//     signing (future work, out of scope). See docs/architecture/deferred_work.md.
+
+syntax = "proto3";
+
+package kaaladrishti.v1;
+
+option go_package = "github.com/kaaladrishti/engine/generated/go/kaaladrishti/v1;kaaladrishtiv1";
+
+// ============================================================================
+// TELEMETRY — Rust -> Go via Unix Domain Socket
+// ============================================================================
+
+// TelemetryEvent is the atomic unit of telemetry emitted by the Rust
+// telemetry-kernel and received by the Go ingestion layer. The typed
+// `payload` oneof ensures the Go validator can reject structurally invalid
+// events without additional runtime type assertions.
+message TelemetryEvent {
+  // Globally unique event identifier (UUIDv4, assigned by Rust).
+  string event_id = 1;
+
+  // Unix epoch milliseconds at event creation (Rust side).
+  int64 timestamp_ms = 2;
+
+  // Source identifier -- host, sensor, or synthetic generator label.
+  string source_id = 3;
+
+  // Semantic version of the event schema. Must match the proto package version.
+  string schema_version = 4;
+
+  // Typed payload. Exactly one field must be set.
+  oneof payload {
+    ProcessEvent   process_event   = 10;
+    NetworkEvent   network_event   = 11;
+    IdentityEvent  identity_event  = 12;
+    FileEvent      file_event      = 13;
+    RegistryEvent  registry_event  = 14;
+  }
+}
+
+// ProcessEvent captures a process lifecycle action.
+message ProcessEvent {
+  string process_id   = 1; // OS-assigned PID (as string for cross-platform compat)
+  string parent_pid   = 2;
+  string image_path   = 3; // Full executable path
+  string command_line = 4;
+  string user_id      = 5; // Principal executing the process
+  string host_id      = 6;
+  ProcessAction action = 7;
+
+  enum ProcessAction {
+    PROCESS_ACTION_UNSPECIFIED = 0;
+    PROCESS_ACTION_SPAWN       = 1;
+    PROCESS_ACTION_TERMINATE   = 2;
+    PROCESS_ACTION_LOAD_MODULE = 3;
+  }
+}
+
+// NetworkEvent captures a network connection attempt or data transfer.
+message NetworkEvent {
+  string process_id    = 1;
+  string host_id       = 2;
+  string src_ip        = 3;
+  int32  src_port      = 4;
+  string dst_ip        = 5;
+  int32  dst_port      = 6;
+  string protocol      = 7; // "tcp", "udp", "icmp"
+  NetworkDirection direction = 8;
+  int64  bytes_sent    = 9;
+  int64  bytes_recv    = 10;
+
+  enum NetworkDirection {
+    NETWORK_DIRECTION_UNSPECIFIED = 0;
+    NETWORK_DIRECTION_OUTBOUND    = 1;
+    NETWORK_DIRECTION_INBOUND     = 2;
+  }
+}
+
+// IdentityEvent captures authentication and authorization changes.
+message IdentityEvent {
+  string principal_id  = 1; // User, service account, or machine identity
+  string credential_id = 2; // Token, certificate, or password hash reference
+  string host_id       = 3;
+  string target_resource = 4;
+  IdentityAction action  = 5;
+  bool   success         = 6;
+
+  enum IdentityAction {
+    IDENTITY_ACTION_UNSPECIFIED          = 0;
+    IDENTITY_ACTION_LOGIN                = 1;
+    IDENTITY_ACTION_LOGOUT               = 2;
+    IDENTITY_ACTION_PRIVILEGE_ESCALATION = 3;
+    IDENTITY_ACTION_ROLE_ASSUMPTION      = 4;
+    IDENTITY_ACTION_CREDENTIAL_USE       = 5;
+    IDENTITY_ACTION_AUTH_FAILURE         = 6;
+  }
+}
+
+// FileEvent captures file system reads/writes relevant to data assets.
+message FileEvent {
+  string process_id = 1;
+  string host_id    = 2;
+  string file_path  = 3;
+  string user_id    = 4;
+  FileAction action = 5;
+  int64  bytes      = 6;
+
+  enum FileAction {
+    FILE_ACTION_UNSPECIFIED = 0;
+    FILE_ACTION_READ        = 1;
+    FILE_ACTION_WRITE       = 2;
+    FILE_ACTION_DELETE      = 3;
+    FILE_ACTION_RENAME      = 4;
+  }
+}
+
+// RegistryEvent captures Windows registry operations.
+// NOTE: RegistryKey node type is an extension beyond the synopsis's explicit list,
+// added for Windows-host realism. Flagged here per Section 22 transparency rule.
+message RegistryEvent {
+  string process_id  = 1;
+  string host_id     = 2;
+  string key_path    = 3;
+  string value_name  = 4;
+  RegistryAction action = 5;
+
+  enum RegistryAction {
+    REGISTRY_ACTION_UNSPECIFIED = 0;
+    REGISTRY_ACTION_READ        = 1;
+    REGISTRY_ACTION_WRITE       = 2;
+    REGISTRY_ACTION_DELETE      = 3;
+    REGISTRY_ACTION_CREATE      = 4;
+  }
+}
+
+// ============================================================================
+// GRAPH PRIMITIVES -- Go internal representation, also used in agent messages
+// ============================================================================
+
+// NodeType enumerates the entity classes in the enterprise graph.
+// RegistryKey: extension beyond synopsis's explicit list -- see RegistryEvent note above.
+enum NodeType {
+  NODE_TYPE_UNSPECIFIED    = 0;
+  NODE_TYPE_PRINCIPAL      = 1;
+  NODE_TYPE_CREDENTIAL     = 2;
+  NODE_TYPE_HOST           = 3;
+  NODE_TYPE_PROCESS        = 4;
+  NODE_TYPE_MODULE         = 5;
+  NODE_TYPE_NETWORK_SOCKET = 6;
+  NODE_TYPE_DATA_ASSET     = 7;
+  NODE_TYPE_REGISTRY_KEY   = 8;
+  NODE_TYPE_CLOUD_RESOURCE = 9;
+  NODE_TYPE_INTENT            = 10;
+  NODE_TYPE_AGENT_PLAN        = 11;
+  NODE_TYPE_WORKFLOW_EXECUTION = 12;
+  NODE_TYPE_ACTION            = 13;
+  NODE_TYPE_TOOL              = 14;
+  NODE_TYPE_TOOL_CALL         = 15;
+  NODE_TYPE_CONTEXT_ARTIFACT  = 16;
+  NODE_TYPE_MEMORY_ENTRY      = 17;
+  NODE_TYPE_AUTHORIZATION     = 18;
+  NODE_TYPE_FINDING           = 19;
+}
+
+// EdgeType enumerates the relationship classes in the enterprise graph.
+enum EdgeType {
+  EDGE_TYPE_UNSPECIFIED    = 0;
+  EDGE_TYPE_ASSUMES_ROLE   = 1;
+  EDGE_TYPE_SPAWNED        = 2;
+  EDGE_TYPE_CONNECTS_TO    = 3;
+  EDGE_TYPE_LOADS          = 4;
+  EDGE_TYPE_READS          = 5;
+  EDGE_TYPE_WRITES         = 6;
+  EDGE_TYPE_HAS_PERMISSION = 7;
+  EDGE_TYPE_EXPOSES        = 8;
+  EDGE_TYPE_TRUSTS         = 9;
+  EDGE_TYPE_DEPENDS_ON     = 10;
+  EDGE_TYPE_ACCESSES       = 11;
+  EDGE_TYPE_INITIATED_BY    = 12;
+  EDGE_TYPE_AUTHORIZED_BY   = 13;
+  EDGE_TYPE_EXECUTED_BY     = 14;
+  EDGE_TYPE_HAS_INTENT      = 15;
+  EDGE_TYPE_HAS_PLAN        = 16;
+  EDGE_TYPE_DERIVED_FROM    = 17;
+  EDGE_TYPE_PERFORMS        = 18;
+  EDGE_TYPE_INVOKES         = 19;
+  EDGE_TYPE_INFLUENCES      = 20;
+  EDGE_TYPE_DELEGATES_TO    = 21;
+  EDGE_TYPE_FOLLOWS         = 22;
+  EDGE_TYPE_DEVIATES_FROM   = 23;
+  EDGE_TYPE_AFFECTS         = 24;
+  EDGE_TYPE_PRODUCES        = 25;
+  EDGE_TYPE_REFERENCES      = 26;
+}
+
+enum DecayClass {
+  DECAY_CLASS_BEHAVIORAL = 0;
+  DECAY_CLASS_BASELINE   = 1;
+}
+
+// GraphNode is a typed, metadata-bearing node in the enterprise graph.
+message GraphNode {
+  string   node_id       = 1; // Stable, globally unique identifier
+  NodeType node_type     = 2;
+  string   label         = 3; // Human-readable display label
+  int64    timestamp_ms  = 4; // Last-seen epoch milliseconds
+  double   confidence    = 5; // [0.0, 1.0] -- how certain we are this node exists
+  double   recency_decay = 6; // Computed decay factor based on last-seen age
+  string   provenance    = 7; // Source event_id or "synthetic"
+  // Flexible property bag for node-type-specific attributes.
+  // Keys are namespaced: "host.os_version", "principal.username", etc.
+  map<string, string> properties = 8;
+}
+
+// GraphEdge is a directed, metadata-bearing relationship between two nodes.
+message GraphEdge {
+  string   edge_id       = 1; // Stable identifier: "{src}:{type}:{dst}"
+  string   src_node_id   = 2;
+  string   dst_node_id   = 3;
+  EdgeType edge_type     = 4;
+  int64    timestamp_ms  = 5;
+  double   confidence    = 6;
+  double   recency_decay = 7;
+  string   provenance    = 8;
+  map<string, string> properties = 9;
+  bool       is_baseline  = 10;
+  DecayClass decay_class  = 11;
+}
+
+// GraphDelta carries incremental changes to the graph, broadcast to subscribed agents.
+message GraphDelta {
+  string delta_id        = 1; // UUIDv4
+  int64  timestamp_ms    = 2;
+  string source_event_id = 3; // Causal TelemetryEvent.event_id
+
+  repeated GraphNode upserted_nodes    = 4;
+  repeated GraphEdge upserted_edges    = 5;
+  repeated string    removed_node_ids  = 6;
+  repeated string    removed_edge_ids  = 7;
+}
+
+// ============================================================================
+// AGENT FRAMEWORK -- Go dispatcher <-> Agent
+// ============================================================================
+
+// AgentSubscription declares which node and edge types an agent is interested in.
+// The Go dispatcher uses this to enforce least-privilege scoping: agents only
+// receive GraphDelta messages containing types they have declared.
+message AgentSubscription {
+  string            agent_id              = 1;
+  string            agent_name            = 2;
+  string            agent_version         = 3;
+  repeated NodeType subscribed_node_types = 4;
+  repeated EdgeType subscribed_edge_types = 5;
+  // Human-readable description of the agent's purpose.
+  string            description           = 6;
+}
+
+// AgentRequest is sent from Go to an agent to invoke analysis.
+message AgentRequest {
+  string     request_id   = 1; // Correlation ID, threaded through audit log
+  string     agent_id     = 2;
+  int64      timestamp_ms = 3;
+  GraphDelta scoped_delta = 4; // Already scope-filtered by dispatcher
+
+  // RESERVED -- never read or written in Phases 1-11.
+  // Placeholder for Pillar 4 (cryptographic tool-manifest signing), which is
+  // documented future work. See docs/architecture/deferred_work.md.
+  string tool_manifest_ref = 15;
+}
+
+// FindingType classifies the nature of an agent's finding.
+enum FindingType {
+  FINDING_TYPE_UNSPECIFIED             = 0;
+  FINDING_TYPE_ANOMALY                 = 1;
+  FINDING_TYPE_BLAST_RADIUS            = 2;
+  FINDING_TYPE_NEXT_ATTACK_FORECAST    = 3;
+  FINDING_TYPE_IDENTITY_ANOMALY        = 4;
+  FINDING_TYPE_DRIFT_DETECTED          = 5;
+  FINDING_TYPE_CLOUD_MISCONFIGURATION  = 6;
+}
+
+// Severity maps to dashboard alert level and governance confidence gating.
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_INFO        = 1;
+  SEVERITY_LOW         = 2;
+  SEVERITY_MEDIUM      = 3;
+  SEVERITY_HIGH        = 4;
+  SEVERITY_CRITICAL    = 5;
+}
+
+// AgentFinding is returned by an agent after analyzing a scoped graph delta.
+// Findings feed into the Go governance state machine. Agents never directly
+// control any platform action.
+message AgentFinding {
+  string      finding_id    = 1; // UUIDv4
+  string      request_id    = 2; // Echoes AgentRequest.request_id
+  string      agent_id      = 3;
+  int64       timestamp_ms  = 4;
+  FindingType finding_type  = 5;
+  Severity    severity      = 6;
+  double      confidence    = 7; // [0.0, 1.0]
+  string      description   = 8;
+
+  // The primary entity this finding is about.
+  string subject_node_id = 9;
+
+  // Optional: blast radius result if applicable.
+  BlastRadius blast_radius = 10;
+
+  // Optional: next-attack forecast if applicable.
+  NextAttackForecastResponse next_attack = 11;
+
+  // Optional: intent lineage score if applicable.
+  IntentLineageResponse intent_lineage = 12;
+
+  // Structured evidence (e.g., anomalous edge IDs, supporting node IDs).
+  repeated string evidence_node_ids = 13;
+  repeated string evidence_edge_ids = 14;
+
+  // Raw advisory detail from the ML plane (never executed directly).
+  map<string, string> metadata = 15;
+}
+
+// ============================================================================
+// ML ANALYTICS -- Go <-> Python via gRPC
+// ============================================================================
+
+// RiskScoreRequest asks the ML service for a GNN-derived anomaly/risk score
+// for a specific subgraph.
+message RiskScoreRequest {
+  string         request_id      = 1;
+  string         subject_node_id = 2;
+  // Subgraph context: the nodes and edges the GNN should embed.
+  repeated GraphNode nodes = 3;
+  repeated GraphEdge edges = 4;
+}
+
+// RiskScoreResponse carries per-node GNN embeddings and an overall anomaly score.
+message RiskScoreResponse {
+  string request_id    = 1;
+  double anomaly_score = 2; // [0.0, 1.0]; higher = more anomalous
+  double confidence    = 3;
+  // Per-node embedding vectors (flattened; dimension is service-internal).
+  map<string, bytes> node_embeddings = 4;
+  string model_version = 5;
+}
+
+// BlastRadius describes the probabilistic reach of an anomalous entity to
+// high-value ("crown jewel") assets, scored via link-prediction-weighted
+// Personalized PageRank / Random-Walk-with-Restart.
+message BlastRadius {
+  string subject_node_id = 1;
+  // Per-crown-jewel reachability scores.
+  map<string, double> crown_jewel_scores = 2;
+  // Ordered probable propagation path (node IDs).
+  repeated string propagation_path   = 3;
+  double          overall_blast_score = 4; // [0.0, 1.0]
+  double          confidence          = 5;
+}
+
+// NextAttackForecastRequest asks the ML service to predict the most probable
+// next MITRE ATT&CK technique, given a sequence of observed technique IDs.
+message NextAttackForecastRequest {
+  string          request_id          = 1;
+  string          subject_node_id     = 2;
+  // Ordered list of observed ATT&CK technique IDs (e.g. ["T1566", "T1055"]).
+  repeated string observed_techniques = 3;
+  // Maximum number of candidate techniques to return.
+  int32           top_k               = 4;
+}
+
+// NextAttackForecastResponse carries the ranked list of predicted techniques.
+message NextAttackForecastResponse {
+  string                   request_id    = 1;
+  repeated TechniquePrediction predictions = 2;
+  string                   model_version = 3;
+}
+
+// TechniquePrediction is a single ranked candidate for the next attack technique.
+message TechniquePrediction {
+  string technique_id   = 1; // MITRE ATT&CK ID, e.g. "T1055"
+  string technique_name = 2;
+  double probability    = 3; // [0.0, 1.0]
+}
+
+// IntentLineageRequest asks the ML service to score drift between a declared
+// agent scope and its actual observed actions.
+//
+// This is Kaaladrishti's own in-scope detector for agentic-workflow hijacking.
+// It is NOT Pillar 5 (the cross-session provenance firewall). See Section 4 of
+// the implementation plan for the explicit boundary.
+//
+// The scorer returns a cosine-distance-based drift score and confidence. It
+// NEVER makes an execution decision -- that belongs to the Go governance FSM.
+message IntentLineageRequest {
+  string request_id          = 1;
+  string workflow_id         = 2; // Identifies the simulated agentic workflow
+  // Text or serialized description of the declared scope/intent.
+  string declared_scope_text = 3;
+  // Text or serialized description of the actual action taken.
+  string actual_action_text  = 4;
+}
+
+// IntentLineageResponse carries the drift score computed by the ML service.
+message IntentLineageResponse {
+  string request_id  = 1;
+  double drift_score = 2; // [0.0, 1.0]; higher = more drift from declared scope
+  double confidence  = 3;
+  // Human-readable explanation of the drift (advisory only).
+  string explanation = 4;
+}
+
+// DriftEvaluationRequest asks the ML service to evaluate whether the current
+// telemetry baseline has shifted (CUSUM / ADWIN change-point detection).
+message DriftEvaluationRequest {
+  string          request_id      = 1;
+  string          metric_name     = 2; // E.g. "network_bytes_per_minute"
+  repeated double recent_values   = 3; // Rolling window of metric observations
+  // Optional: previously computed baseline statistics.
+  double          baseline_mean   = 4;
+  double          baseline_stddev = 5;
+}
+
+// DriftEvaluationResponse carries the change-point detection result.
+message DriftEvaluationResponse {
+  string request_id       = 1;
+  bool   drift_detected   = 2;
+  double drift_magnitude  = 3; // Magnitude of detected shift
+  double confidence       = 4;
+  // Index into recent_values where the change point was detected (-1 if none).
+  int32  change_point_idx = 5;
+  string detector_type    = 6; // "CUSUM" or "ADWIN"
+  string model_version    = 7;
+}
+
+// ============================================================================
+// RESPONSE GOVERNANCE -- Go state machine
+// ============================================================================
+
+// ResponseProposal is generated by the Go governance layer when an AgentFinding
+// crosses the confidence threshold, proposing a specific defensive action.
+// Python ML never generates ResponseProposals -- it only returns analysis.
+message ResponseProposal {
+  string     proposal_id   = 1;
+  string     finding_id    = 2; // Causal finding
+  int64      timestamp_ms  = 3;
+  ActionType action_type   = 4;
+  string     description   = 5;
+  // Target entity for the proposed action.
+  string     target_node_id = 6;
+  // Confidence of the underlying finding (not authorization -- see FSM design).
+  double     confidence     = 7;
+  // Whether this action is simulated (always true in Phases 1-11).
+  bool       simulated      = 8;
+  // Parameters for the action (e.g., "new_ip": "10.0.0.99" for MTD).
+  map<string, string> action_params = 9;
+}
+
+// ActionType classifies the proposed defensive action.
+enum ActionType {
+  ACTION_TYPE_UNSPECIFIED              = 0;
+  ACTION_TYPE_MTD_NETWORK_REROUTE      = 1; // Moving Target Defense: change network path
+  ACTION_TYPE_MTD_CREDENTIAL_ROTATE    = 2; // Moving Target Defense: rotate credential
+  ACTION_TYPE_DECEPTION_HONEYCRED      = 3; // Deploy decoy credential
+  ACTION_TYPE_DECEPTION_HONEYSHARE     = 4; // Deploy decoy file share
+  ACTION_TYPE_ISOLATE_HOST             = 5; // Quarantine a host (simulated)
+  ACTION_TYPE_REVOKE_SESSION           = 6; // Revoke an active session (simulated)
+  ACTION_TYPE_RESTRICT_PUBLIC_ACCESS   = 7; // Restrict public access to resource
+  ACTION_TYPE_REDUCE_PERMISSION        = 8; // Reduce excessive permissions
+  ACTION_TYPE_ISOLATE_RESOURCE         = 9; // Isolate cloud resource
+}
+
+// AuthorizationRequest is presented to the human operator when the governance
+// FSM reaches HUMAN_APPROVAL_REQUIRED. The WebSocket API pushes this to the
+// dashboard for the operator to act on.
+message AuthorizationRequest {
+  string           auth_request_id = 1;
+  string           proposal_id     = 2;
+  int64            timestamp_ms    = 3;
+  ResponseProposal proposal        = 4;
+  // ISO-8601 deadline for operator response (after which it auto-expires).
+  string           expires_at      = 5;
+}
+
+// AuthorizationDecision is the operator's approval or denial of an action.
+message AuthorizationDecision {
+  string auth_request_id = 1;
+  string operator_id     = 2; // Who made the decision
+  int64  timestamp_ms    = 3;
+  bool   approved        = 4;
+  string reason          = 5; // Free-text justification
+}
+
+// ============================================================================
+// AUDIT
+// ============================================================================
+
+// AuditEvent is the append-only record of every significant platform action.
+// Every ingestion, finding, state transition, and approval decision generates
+// an AuditEvent. The audit log must never be modified after write.
+message AuditEvent {
+  string        audit_id       = 1; // UUIDv4
+  int64         timestamp_ms   = 2;
+  string        correlation_id = 3; // Threads through a causal chain
+  string        request_id     = 4; // Original triggering request
+  AuditCategory category       = 5;
+  string        actor          = 6; // Component or operator that performed the action
+  string        action         = 7; // Human-readable action description
+  string        outcome        = 8; // "success", "failure", "rejected", "pending"
+  string        detail         = 9; // JSON-serialized detail blob (structured)
+  // References to causal entities.
+  string        subject_node_id = 10;
+  string        finding_id      = 11;
+  string        proposal_id     = 12;
+  string        auth_request_id = 13;
+}
+
+// AuditCategory classifies the source subsystem of an audit event.
+enum AuditCategory {
+  AUDIT_CATEGORY_UNSPECIFIED   = 0;
+  AUDIT_CATEGORY_INGESTION     = 1; // Telemetry received/rejected
+  AUDIT_CATEGORY_GRAPH         = 2; // Graph mutation
+  AUDIT_CATEGORY_DISPATCH      = 3; // Agent invocation
+  AUDIT_CATEGORY_FINDING       = 4; // Agent finding returned
+  AUDIT_CATEGORY_GOVERNANCE    = 5; // FSM state transition
+  AUDIT_CATEGORY_RESPONSE      = 6; // Simulated action execution
+  AUDIT_CATEGORY_AUTHORIZATION = 7; // Human approval/denial
+  AUDIT_CATEGORY_SYSTEM        = 8; // Startup, shutdown, error
+}
+
+// ============================================================================
+// gRPC SERVICE DEFINITION
+// ============================================================================
+
+// MLAnalyticsService is implemented by the Python ml-analytics service and
+// called by the Go engine. Go is always the caller; Python is always the callee.
+// Python never calls back into Go -- all authority remains in Go.
+service MLAnalyticsService {
+  // ScoreRisk: GNN-based anomaly and risk score for a subgraph.
+  rpc ScoreRisk(RiskScoreRequest) returns (RiskScoreResponse);
+
+  // ComputeBlastRadius: PPR/RWR-based blast-radius scoring.
+  rpc ComputeBlastRadius(RiskScoreRequest) returns (BlastRadius);
+
+  // ForecastNextAttack: Transformer/LSTM next-technique prediction.
+  rpc ForecastNextAttack(NextAttackForecastRequest) returns (NextAttackForecastResponse);
+
+  // ScoreIntentLineage: cosine-distance drift between declared scope and actual action.
+  rpc ScoreIntentLineage(IntentLineageRequest) returns (IntentLineageResponse);
+
+  // EvaluateDrift: CUSUM/ADWIN baseline change-point detection.
+  rpc EvaluateDrift(DriftEvaluationRequest) returns (DriftEvaluationResponse);
+}
